@@ -57,6 +57,7 @@ public class DorisStreamLoadObserver
     private static final Logger LOG = LoggerFactory.getLogger(DorisStreamLoadObserver.class);
 
     private final DorisKey options;
+    private static final String RESULT_SUCCESS = "Success";
     private static final String RESULT_FAILED = "Fail";
     private static final String RESULT_LABEL_EXISTED = "Label Already Exists";
     private static final String LABEL_STATE_VISIBLE = "VISIBLE";
@@ -156,6 +157,10 @@ public class DorisStreamLoadObserver
             throw new IOException("Unable to flush data to Doris: unknown result status.");
         }
         LOG.debug("StreamLoad response:{}", JSON.toJSONString(loadResult));
+        if (options.isStrictLoadResult()) {
+            checkStrictly(host, loadResult, data);
+            return;
+        }
         if (RESULT_FAILED.equals(loadResult.get(keyStatus))) {
             markHostFailure(host);
             throw new IOException(
@@ -167,6 +172,46 @@ public class DorisStreamLoadObserver
         }
         else {
             markHostSuccess(host);
+        }
+    }
+
+    /**
+     * Accepts the batch only when it was loaded completely under the label that was sent.  Publish
+     * Timeout (committed, not yet visible) and Label Already Exists are failures here: neither
+     * shows that this batch is visible, so the caller has to look the label up instead of the
+     * writer assuming success.
+     */
+    private void checkStrictly(String host, Map<String, Object> result, WriterTuple data)
+            throws IOException
+    {
+        List<String> problems = new ArrayList<>();
+        Object status = result.get("Status");
+        if (!RESULT_SUCCESS.equals(status)) {
+            problems.add("Status " + status);
+        }
+        if (!data.getLabel().equals(result.get("Label"))) {
+            problems.add("Label " + result.get("Label"));
+        }
+        long rows = data.getRows().size();
+        expectCount(result, "NumberTotalRows", rows, problems);
+        expectCount(result, "NumberLoadedRows", rows, problems);
+        expectCount(result, "NumberFilteredRows", 0, problems);
+        expectCount(result, "NumberUnselectedRows", 0, problems);
+        if (!problems.isEmpty()) {
+            if (RESULT_FAILED.equals(status)) {
+                markHostFailure(host);
+            }
+            throw new IOException(String.format("Stream load of label[%s] with %d rows is not accepted: %s.%n%s",
+                    data.getLabel(), rows, String.join(", ", problems), JSON.toJSONString(result)));
+        }
+        markHostSuccess(host);
+    }
+
+    private static void expectCount(Map<String, Object> result, String key, long expected, List<String> problems)
+    {
+        Object value = result.get(key);
+        if (!(value instanceof Number) || ((Number) value).longValue() != expected) {
+            problems.add(key + " " + value + " (expected " + expected + ")");
         }
     }
 

@@ -130,7 +130,7 @@ public class DorisWriter
         public void init()
         {
             options = new DorisKey(super.getPluginJobConf());
-            writerManager = new DorisWriterManager(options);
+            writerManager = new DorisWriterManager(options, getTaskId());
             rowCodec = DorisCodecFactory.createCodec(options);
         }
 
