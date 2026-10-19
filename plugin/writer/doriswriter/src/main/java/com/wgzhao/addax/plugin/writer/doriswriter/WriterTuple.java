@@ -21,6 +21,7 @@
 package com.wgzhao.addax.plugin.writer.doriswriter;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 
 /** Writer Tuple. */
@@ -30,6 +31,8 @@ public class WriterTuple
     private final Long bytes;
     private final List<byte[]> rows;
     private final CountDownLatch latch;
+    // the response to the latest stream load attempt, kept for the load report
+    private Map<String, Object> response;
 
     /** Writertuple. */
     public WriterTuple(String label, Long bytes, List<byte[]> rows)
@@ -60,4 +63,10 @@ public class WriterTuple
 
     /** Returns the latch. */
     public CountDownLatch getLatch() {return latch;}
+
+    /** Returns the response to the latest stream load attempt, or null when there was none. */
+    public Map<String, Object> getResponse() {return response;}
+
+    /** Sets the response. */
+    public void setResponse(Map<String, Object> response) {this.response = response;}
 }

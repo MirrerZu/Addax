@@ -143,8 +143,10 @@ public class DorisStreamLoadObserver
         LOG.debug("Start to join batch data: rows[{}] bytes[{}] label[{}].", data.getRows().size(), data.getBytes(), data.getLabel());
         loadUrl = urlDecode(loadUrl);
         Map<String, Object> loadResult;
+        data.setResponse(null);
         try {
             loadResult = put(loadUrl, data.getLabel(), addRows(data.getRows(), data.getBytes().intValue()));
+            data.setResponse(loadResult);
         }
         catch (IOException e) {
             // connection level failure: stop sending the next batches to this host for a while

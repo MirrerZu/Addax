@@ -75,6 +75,7 @@ public class DorisKey
     private static final String LABEL_PREFIX = "labelPrefix";
     private static final String SEQUENTIAL_LABELS = "sequentialLabels";
     private static final String STRICT_LOAD_RESULT = "strictLoadResult";
+    private static final String LOAD_REPORT = "loadReport";
     // the characters Doris accepts in a label; the prefix leaves room for the task id and batch number
     private static final Pattern LABEL_PREFIX_PATTERN = Pattern.compile("[-_A-Za-z0-9:]{1,100}");
 
@@ -203,6 +204,12 @@ public class DorisKey
     public boolean isStrictLoadResult()
     {
         return options.getBool(STRICT_LOAD_RESULT, false);
+    }
+
+    /** Returns the file every stream load attempt is reported to, see {@link LoadReport}; null for none. */
+    public String getLoadReport()
+    {
+        return options.getString(LOAD_REPORT, null);
     }
 
     /** Returns the loadurllist. */
