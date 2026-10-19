@@ -100,6 +100,9 @@ public class DorisStreamLoadObserver
         this.httpClient = HttpClients.custom()
                 .setConnectionManager(connManager)
                 .setDefaultRequestConfig(this.requestConfig)
+                // a stream load is sent again only by DorisWriterManager, which keeps the label
+                // and honors maxRetries; the client's own retry would resend behind its back
+                .disableAutomaticRetries()
                 .setRedirectStrategy(new DefaultRedirectStrategy()
                 {
                     @Override

@@ -204,7 +204,8 @@ public class DorisWriterManager {
 
     private void asyncFlush(WriterTuple flushData) throws Exception {
         LOG.debug("Async stream load: rows[{}] bytes[{}] label[{}].", flushData.getRows().size(), flushData.getBytes(), flushData.getLabel());
-        for (int i = 0; i <= options.getMaxRetries(); i++) {
+        int maxRetries = options.getMaxRetries();
+        for (int i = 0; i <= maxRetries; i++) {
             try {
                 // flush to Doris with stream load
                 visitor.streamLoad(flushData);
@@ -212,7 +213,7 @@ public class DorisWriterManager {
                 return;
             } catch (Exception e) {
                 LOG.warn("Failed to flush batch data to Doris, retry times = {}", i, e);
-                if (i >= options.getMaxRetries()) {
+                if (i >= maxRetries) {
                     throw new IOException(e);
                 }
                 if (e instanceof DorisWriterException && ((DorisWriterException)e).needReCreateLabel()) {

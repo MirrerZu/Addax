@@ -44,7 +44,7 @@ public class DorisKey
         extends Key
 {
 
-    private static final int MAX_RETRIES = 3;
+    private static final int DEFAULT_MAX_RETRIES = 3;
     private static final long DEFAULT_FLUSH_INTERVAL = 3_000;
     private static final int DEFAULT_CONNECT_TIMEOUT = 5_000;
     private static final int DEFAULT_SOCKET_TIMEOUT = 600_000;
@@ -60,6 +60,7 @@ public class DorisKey
     }
 
     private static final String FLUSH_INTERVAL = "flushInterval";
+    private static final String MAX_RETRIES = "maxRetries";
     private static final String LOAD_URL = "loadUrl";
     private static final String FLUSH_QUEUE_LENGTH = "flushQueueLength";
     private static final String LOAD_PROPS = "loadProps";
@@ -134,6 +135,7 @@ public class DorisKey
     public void doPretreatment()
     {
         validateStreamLoadUrl();
+        getMaxRetries();
     }
 
     /** Returns the jdbcurl. */
@@ -196,10 +198,19 @@ public class DorisKey
         return options.getList(POST_SQL, String.class);
     }
 
-    /** Returns the maxretries. */
+    /**
+     * Returns how many times a failed batch is stream-loaded again; 0 loads every batch exactly once.
+     *
+     * <p>The key used to be ignored, so a job asking for no retries still sent a failed batch up
+     * to four times.</p>
+     */
     public int getMaxRetries()
     {
-        return MAX_RETRIES;
+        int retries = options.getInt(MAX_RETRIES, DEFAULT_MAX_RETRIES);
+        if (retries < 0) {
+            throw AddaxException.asAddaxException(CONFIG_ERROR, "maxRetries must not be negative, got " + retries);
+        }
+        return retries;
     }
 
     /**
