@@ -46,6 +46,7 @@ public class DorisWriterManager {
     private static final Logger LOG = LoggerFactory.getLogger(DorisWriterManager.class);
 
     private final DorisStreamLoadObserver visitor;
+    private final LoadReport report;
     private final DorisKey options;
     private final int taskId;
     private final AtomicLong labelSequence = new AtomicLong();
@@ -70,6 +71,7 @@ public class DorisWriterManager {
         this.options = options;
         this.taskId = taskId;
         this.visitor = new DorisStreamLoadObserver (options);
+        this.report = LoadReport.open(options, taskId);
         flushQueue = new LinkedBlockingDeque<>(options.getFlushQueueLength());
         BasicThreadFactory basicThreadFactory = BasicThreadFactory.builder().namingPattern("Doris-interval-flush").daemon(true).build();
         this.scheduler = Executors.newSingleThreadScheduledExecutor(basicThreadFactory);
@@ -160,7 +162,7 @@ public class DorisWriterManager {
         } catch (Exception e) {
             throw new RuntimeException("Writing records to Doris failed.", e);
         } finally {
-            closeVisitor();
+            release();
         }
         checkFlushException();
     }
@@ -203,6 +205,7 @@ public class DorisWriterManager {
         }
         LOG.warn("Batch label[{}] rows[{}] is not loaded because the writer has failed or was aborted.",
                 batch.getLabel(), batch.getRows().size());
+        report.discard(batch);
     }
 
     /** Createbatchlabel. */
@@ -232,7 +235,7 @@ public class DorisWriterManager {
                     }
                     if (closed) {
                         if (aborted) {
-                            closeVisitor();
+                            release();
                         }
                         return;
                     }
@@ -268,25 +271,31 @@ public class DorisWriterManager {
         LOG.debug("Async stream load: rows[{}] bytes[{}] label[{}].", flushData.getRows().size(), flushData.getBytes(), flushData.getLabel());
         int maxRetries = options.getMaxRetries();
         for (int i = 0; i <= maxRetries; i++) {
+            report.begin(flushData, i);
+            Exception failure = null;
             try {
                 // flush to Doris with stream load
                 visitor.streamLoad(flushData);
+            } catch (Exception e) {
+                failure = e;
+            }
+            report.end(flushData, i, failure);
+            if (failure == null) {
                 LOG.debug("Async stream load finished: label[{}].", flushData.getLabel());
                 return;
-            } catch (Exception e) {
-                LOG.warn("Failed to flush batch data to Doris, retry times = {}", i, e);
-                if (i >= maxRetries || aborted) {
-                    throw new IOException(e);
-                }
-                // Doris accepts the label of an aborted load again, so a sequential label is kept
-                if (e instanceof DorisWriterException && ((DorisWriterException)e).needReCreateLabel()
-                        && !options.isSequentialLabels()) {
-                    String newLabel = createBatchLabel();
-                    LOG.warn("Batch label changed from [{}] to [{}]", flushData.getLabel(), newLabel);
-                    flushData.setLabel(newLabel);
-                }
-                TimeUnit.SECONDS.sleep(Math.min(i + 1, 10));
             }
+            LOG.warn("Failed to flush batch data to Doris, retry times = {}", i, failure);
+            if (i >= maxRetries || aborted) {
+                throw new IOException(failure);
+            }
+            // Doris accepts the label of an aborted load again, so a sequential label is kept
+            if (failure instanceof DorisWriterException && ((DorisWriterException) failure).needReCreateLabel()
+                    && !options.isSequentialLabels()) {
+                String newLabel = createBatchLabel();
+                LOG.warn("Batch label changed from [{}] to [{}]", flushData.getLabel(), newLabel);
+                flushData.setLabel(newLabel);
+            }
+            TimeUnit.SECONDS.sleep(Math.min(i + 1, 10));
         }
     }
 
@@ -297,11 +306,16 @@ public class DorisWriterManager {
         }
     }
 
-    private void closeVisitor() {
+    private void release() {
         try {
             visitor.close();
         } catch (IOException e) {
             LOG.warn("Failed to close the Doris stream load http client.", e);
+        }
+        try {
+            report.close();
+        } catch (IOException e) {
+            LOG.warn("Failed to close the load report.", e);
         }
     }
 }
