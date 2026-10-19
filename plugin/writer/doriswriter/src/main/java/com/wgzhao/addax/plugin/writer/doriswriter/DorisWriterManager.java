@@ -37,6 +37,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Doris Writer Manager. */
 public class DorisWriterManager {
@@ -51,7 +52,10 @@ public class DorisWriterManager {
     private int batchCount = 0;
     private long batchSize = 0;
     private volatile boolean closed = false;
-    private volatile Throwable flushException;
+    // set when the task ends without a successful close(): nothing buffered or queued is loaded any more
+    private volatile boolean aborted = false;
+    // the first failure only: a later one is a consequence and would hide the cause
+    private final AtomicReference<Throwable> flushException = new AtomicReference<>();
 
     /** Doriswritermanager. */
     public DorisWriterManager( DorisKey options) {
@@ -73,7 +77,7 @@ public class DorisWriterManager {
     private void startScheduler() {
         this.scheduler.scheduleWithFixedDelay(() -> {
             synchronized (DorisWriterManager.this) {
-                if (closed || batchCount == 0) {
+                if (closed || batchCount == 0 || flushException.get() != null) {
                     return;
                 }
                 try {
@@ -81,7 +85,7 @@ public class DorisWriterManager {
                     LOG.debug("Doris interval Sinking triggered: rows[{}] bytes[{}] label[{}].", batchCount, batchSize, label);
                     flush(label);
                 } catch (Throwable e) {
-                    flushException = e;
+                    flushException.compareAndSet(null, e);
                 }
             }
         }, options.getFlushInterval(), options.getFlushInterval(), TimeUnit.MILLISECONDS);
@@ -137,7 +141,8 @@ public class DorisWriterManager {
         closed = true;
         scheduler.shutdown();
         try {
-            if (batchCount > 0) {
+            // after a failure the buffered rows are dropped rather than loaded, see startAsyncFlushing
+            if (batchCount > 0 && flushException.get() == null) {
                 String label = createBatchLabel();
                 LOG.debug("Doris Sink is about to close: rows[{}] label[{}].", batchCount, label);
                 flush(label);
@@ -146,13 +151,49 @@ public class DorisWriterManager {
         } catch (Exception e) {
             throw new RuntimeException("Writing records to Doris failed.", e);
         } finally {
-            try {
-                visitor.close();
-            } catch (IOException e) {
-                LOG.warn("Failed to close the Doris stream load http client.", e);
-            }
+            closeVisitor();
         }
         checkFlushException();
+    }
+
+    /**
+     * Stops without loading what is still buffered or queued, for a task that ends without a
+     * successful {@link #close()}: it failed, or it was cancelled because another task failed.
+     * Loading those rows would put data into Doris for a job that is already failing.  A stream
+     * load already in flight is left to finish so that its outcome is known.  Does nothing after
+     * close().
+     */
+    public void abort() {
+        if (closed) {
+            return;
+        }
+        aborted = true;
+        synchronized (this) {
+            closed = true;
+            scheduler.shutdownNow();
+            if (batchCount > 0) {
+                LOG.warn("Doris Sink aborted: dropped rows[{}] that were buffered but not loaded.", batchCount);
+            }
+            buffer.clear();
+            batchCount = 0;
+            batchSize = 0;
+        }
+        List<WriterTuple> pending = new ArrayList<>();
+        flushQueue.drainTo(pending);
+        pending.forEach(this::discard);
+        // wakes the flush thread up so that it exits and releases the http client
+        flushQueue.offer(new WriterTuple("", 0L, null, null));
+    }
+
+    private void discard(WriterTuple batch) {
+        if (Strings.isNullOrEmpty(batch.getLabel())) {
+            if (batch.getLatch() != null) {
+                batch.getLatch().countDown();
+            }
+            return;
+        }
+        LOG.warn("Batch label[{}] rows[{}] is not loaded because the writer has failed or was aborted.",
+                batch.getLabel(), batch.getRows().size());
     }
 
     /** Createbatchlabel. */
@@ -178,14 +219,23 @@ public class DorisWriterManager {
                         flushData.getLatch().countDown();
                     }
                     if (closed) {
+                        if (aborted) {
+                            closeVisitor();
+                        }
                         return;
                     }
+                    continue;
+                }
+                if (aborted || flushException.get() != null) {
+                    // once a batch has failed the later ones must not reach Doris: the job fails
+                    // anyway, and loading them would leave rows after the gap the failure made
+                    discard(flushData);
                     continue;
                 }
                 try {
                     asyncFlush(flushData);
                 } catch (Throwable e) {
-                    flushException = e;
+                    flushException.compareAndSet(null, e);
                 }
             }
         });
@@ -213,7 +263,7 @@ public class DorisWriterManager {
                 return;
             } catch (Exception e) {
                 LOG.warn("Failed to flush batch data to Doris, retry times = {}", i, e);
-                if (i >= maxRetries) {
+                if (i >= maxRetries || aborted) {
                     throw new IOException(e);
                 }
                 if (e instanceof DorisWriterException && ((DorisWriterException)e).needReCreateLabel()) {
@@ -227,8 +277,17 @@ public class DorisWriterManager {
     }
 
     private void checkFlushException() {
-        if (flushException != null) {
-            throw new RuntimeException("Writing records to Doris failed.", flushException);
+        Throwable e = flushException.get();
+        if (e != null) {
+            throw new RuntimeException("Writing records to Doris failed.", e);
+        }
+    }
+
+    private void closeVisitor() {
+        try {
+            visitor.close();
+        } catch (IOException e) {
+            LOG.warn("Failed to close the Doris stream load http client.", e);
         }
     }
 }

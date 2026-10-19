@@ -171,10 +171,11 @@ public class DorisWriter
         @Override
         public void destroy()
         {
-            // no-op: writerManager.close() is invoked from post() so that
-            // all async Stream Load batches are awaited before the task
-            // is marked successful.  close() is idempotent, so calling
-            // it again here is safe but unnecessary.
+            // post() has closed the manager when the task succeeded, so this only stops a task
+            // that failed or was cancelled: what it still holds must not be loaded
+            if (writerManager != null) {
+                writerManager.abort();
+            }
         }
 
         @Override
