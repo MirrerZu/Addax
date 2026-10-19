@@ -34,6 +34,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 import static com.wgzhao.addax.core.base.Constant.DEFAULT_BATCH_SIZE;
 import static com.wgzhao.addax.core.spi.ErrorCode.CONFIG_ERROR;
@@ -71,6 +72,11 @@ public class DorisKey
     private static final String CONNECTION_REQUEST_TIMEOUT = "connectionRequestTimeout";
     private static final String HOST_COOLDOWN_MS = "hostCooldownMs";
     private static final String DEFAULT_LABEL_PREFIX = "addax_doris_writer_";
+    private static final String LABEL_PREFIX = "labelPrefix";
+    private static final String SEQUENTIAL_LABELS = "sequentialLabels";
+    private static final String STRICT_LOAD_RESULT = "strictLoadResult";
+    // the characters Doris accepts in a label; the prefix leaves room for the task id and batch number
+    private static final Pattern LABEL_PREFIX_PATTERN = Pattern.compile("[-_A-Za-z0-9:]{1,100}");
 
     private final Configuration loadProps;
     private final Configuration options;
@@ -136,6 +142,10 @@ public class DorisKey
     {
         validateStreamLoadUrl();
         getMaxRetries();
+        if (!LABEL_PREFIX_PATTERN.matcher(getLabelPrefix()).matches()) {
+            throw AddaxException.asAddaxException(CONFIG_ERROR,
+                    "labelPrefix may only contain letters, digits, '-', '_' and ':' and be at most 100 characters long");
+        }
     }
 
     /** Returns the jdbcurl. */
@@ -168,10 +178,31 @@ public class DorisKey
         return options.getString(PASSWORD);
     }
 
-    /** Returns the labelprefix. */
+    /** Returns the prefix of every batch label; the key used to be ignored in favor of the default. */
     public String getLabelPrefix()
     {
-        return DEFAULT_LABEL_PREFIX;
+        return options.getString(LABEL_PREFIX, DEFAULT_LABEL_PREFIX);
+    }
+
+    /**
+     * Whether batch labels are {@code <labelPrefix><taskId>_<n>} with n counting the batches of the
+     * task from 1, instead of the prefix plus a random UUID.  A caller that gives each run its own
+     * prefix can then tell every batch of the run by its label and look its state up in Doris, and
+     * running the same job again is rejected by Doris instead of loading the rows twice.
+     */
+    public boolean isSequentialLabels()
+    {
+        return options.getBool(SEQUENTIAL_LABELS, false);
+    }
+
+    /**
+     * Whether a batch counts as written only when Doris reports it fully loaded: status Success,
+     * the label that was sent, and every row loaded with none filtered or unselected.  Off by
+     * default because it rejects results the writer has always accepted.
+     */
+    public boolean isStrictLoadResult()
+    {
+        return options.getBool(STRICT_LOAD_RESULT, false);
     }
 
     /** Returns the loadurllist. */

@@ -37,6 +37,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 /** Doris Writer Manager. */
@@ -46,6 +47,8 @@ public class DorisWriterManager {
 
     private final DorisStreamLoadObserver visitor;
     private final DorisKey options;
+    private final int taskId;
+    private final AtomicLong labelSequence = new AtomicLong();
     private final List<byte[]> buffer = new ArrayList<> ();
     private final LinkedBlockingDeque< WriterTuple > flushQueue;
     private final ScheduledExecutorService scheduler;
@@ -59,7 +62,13 @@ public class DorisWriterManager {
 
     /** Doriswritermanager. */
     public DorisWriterManager( DorisKey options) {
+        this(options, 0);
+    }
+
+    /** Creates the manager of one writer task; the task id keeps sequential labels apart between tasks. */
+    public DorisWriterManager(DorisKey options, int taskId) {
         this.options = options;
+        this.taskId = taskId;
         this.visitor = new DorisStreamLoadObserver (options);
         flushQueue = new LinkedBlockingDeque<>(options.getFlushQueueLength());
         BasicThreadFactory basicThreadFactory = BasicThreadFactory.builder().namingPattern("Doris-interval-flush").daemon(true).build();
@@ -198,6 +207,9 @@ public class DorisWriterManager {
 
     /** Createbatchlabel. */
     public String createBatchLabel() {
+        if (options.isSequentialLabels()) {
+            return options.getLabelPrefix() + taskId + "_" + labelSequence.incrementAndGet();
+        }
         return options.getLabelPrefix() + UUID.randomUUID();
     }
 
@@ -266,7 +278,9 @@ public class DorisWriterManager {
                 if (i >= maxRetries || aborted) {
                     throw new IOException(e);
                 }
-                if (e instanceof DorisWriterException && ((DorisWriterException)e).needReCreateLabel()) {
+                // Doris accepts the label of an aborted load again, so a sequential label is kept
+                if (e instanceof DorisWriterException && ((DorisWriterException)e).needReCreateLabel()
+                        && !options.isSequentialLabels()) {
                     String newLabel = createBatchLabel();
                     LOG.warn("Batch label changed from [{}] to [{}]", flushData.getLabel(), newLabel);
                     flushData.setLabel(newLabel);
