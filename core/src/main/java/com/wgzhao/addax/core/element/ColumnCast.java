@@ -154,6 +154,10 @@ class DateCast
     static String timeFormat;
     static String timeZone;
     static TimeZone timeZoner;
+    // DATE and TIME values are java.sql.Date and java.sql.Time, whose milliseconds JDBC drivers compute
+    // in the JVM default zone (and JDBC writers read back in it); rendering them in another zone moves a
+    // date to the day before or after, and a time by the offset, whenever the two zones differ
+    static TimeZone localZone;
 
     private DateCast() {}
 
@@ -164,6 +168,7 @@ class DateCast
         DateCast.dateFormat = configuration.getString("common.column.dateFormat", "yyyy-MM-dd");
         DateCast.timeZone = configuration.getString("common.column.timeZone", "GMT+8");
         DateCast.timeZoner = TimeZone.getTimeZone(DateCast.timeZone);
+        DateCast.localZone = TimeZone.getDefault();
     }
 
     static String asString(final DateColumn column)
@@ -174,9 +179,9 @@ class DateCast
 
         return switch (column.getSubType()) {
             case DATE -> DateFormatUtils.format(column.asDate(), DateCast.dateFormat,
-                    DateCast.timeZoner);
+                    DateCast.localZone);
             case TIME -> DateFormatUtils.format(column.asDate(), DateCast.timeFormat,
-                    DateCast.timeZoner);
+                    DateCast.localZone);
             case DATETIME -> DateFormatUtils.format(column.asDate(),
                     DateCast.datetimeFormat, DateCast.timeZoner);
             default -> throw AddaxException
